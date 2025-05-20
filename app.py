@@ -1,5 +1,4 @@
 import os
-
 import streamlit as st
 import faiss
 import numpy as np
@@ -8,16 +7,13 @@ from typing import List
 from groq import Groq
 from sentence_transformers import SentenceTransformer
 
-# Global variables
-chunks = []
-index = None
+# Global state
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
-client = None
 
 # Load PDF text
-def load_pdf_text(pdf_path):
+def load_pdf_text(file):
     text = ""
-    with pdfplumber.open(pdf_path) as pdf:
+    with pdfplumber.open(file) as pdf:
         for page in pdf.pages:
             page_text = page.extract_text()
             if page_text:
@@ -34,14 +30,14 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]
     return chunk_list
 
 # Retrieve top-k similar chunks
-def retrieve_relevant_chunks(query, k=3):
+def retrieve_relevant_chunks(query, index, chunks, k=3):
     query_embedding = embedder.encode([query])
     D, I = index.search(np.array(query_embedding), k)
     return [chunks[i] for i in I[0]]
 
 # Generate answer using Groq
-def generate_answer(query):
-    retrieved_chunks = retrieve_relevant_chunks(query)
+def generate_answer(query, index, chunks, client):
+    retrieved_chunks = retrieve_relevant_chunks(query, index, chunks)
     context = "\n\n".join(retrieved_chunks)
     prompt = f"Context:\n{context}\n\nQuestion: {query}\nAnswer:"
 
@@ -54,50 +50,42 @@ def generate_answer(query):
     )
     return response.choices[0].message.content.strip()
 
+# Streamlit UI
 def main():
-    global chunks, index, client
+    st.set_page_config(page_title="PDF QA with Groq", layout="centered")
+    st.title("📄 Ask Questions About Your PDF")
+    st.markdown("Upload a PDF and ask questions using **LLaMA 3 via Groq API**.")
 
-    # Get API key
-    api_key = input("Enter your GROQ API key: ").strip()
-    if not api_key:
-        print("API key is required.")
-        return
-    os.environ["GROQ_API_KEY"] = api_key
-    client = Groq(api_key=api_key)
+    api_key = st.text_input("🔑 Enter your Groq API Key", type="password")
+    uploaded_file = st.file_uploader("📤 Upload PDF", type="pdf")
 
-    # Get PDF file path
-    pdf_path = input("Enter path to PDF file: ").strip()
-    try:
-        text = load_pdf_text(pdf_path)
-        print("PDF loaded successfully.")
-    except Exception as e:
-        print(f"Failed to load PDF: {e}")
-        return
+    if api_key and uploaded_file:
+        with st.spinner("Processing PDF..."):
+            try:
+                text = load_pdf_text(uploaded_file)
+                chunks = chunk_text(text)
+                embeddings = embedder.encode(chunks, convert_to_tensor=True)
+                embedding_dim = embeddings[0].shape[0]
+                index = faiss.IndexFlatL2(embedding_dim)
+                index.add(embeddings.cpu().detach().numpy())
+                client = Groq(api_key=api_key)
+                st.success("PDF processed and indexed!")
+            except Exception as e:
+                st.error(f"Error processing PDF: {e}")
+                return
 
-    chunks = chunk_text(text)
-    print(f"Text chunked into {len(chunks)} chunks.")
-
-    # Create embeddings and index
-    embeddings = embedder.encode(chunks, convert_to_tensor=True)
-    embedding_dim = embeddings[0].shape[0]
-    index = faiss.IndexFlatL2(embedding_dim)
-    index.add(embeddings.cpu().detach().numpy())
-    print("FAISS index created.")
-
-    print("\nYou can now ask questions related to the PDF. Type 'exit' or 'quit' to stop.")
-    while True:
-        question = input("\nEnter your question: ").strip()
-        if question.lower() in ["exit", "quit"]:
-            print("Exiting.")
-            break
-        if not question:
-            print("Please enter a valid question.")
-            continue
-        try:
-            answer = generate_answer(question)
-            print(f"\nAnswer:\n{answer}")
-        except Exception as e:
-            print(f"Error generating answer: {e}")
+        st.markdown("---")
+        question = st.text_input("❓ Ask a question about the PDF")
+        if question:
+            with st.spinner("Generating answer..."):
+                try:
+                    answer = generate_answer(question, index, chunks, client)
+                    st.markdown("### 🧠 Answer:")
+                    st.write(answer)
+                except Exception as e:
+                    st.error(f"Error generating answer: {e}")
+    else:
+        st.info("Please provide both the Groq API key and a PDF file.")
 
 if __name__ == "__main__":
     main()

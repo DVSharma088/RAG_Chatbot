@@ -1,8 +1,6 @@
 import os
-# Install required packages
-os.system('pip install streamlit faiss-cpu numpy pdfplumber groq sentence-transformers spacy')
-os.system('python -m spacy download en_core_web_sm')
 
+import streamlit as st
 import faiss
 import numpy as np
 import pdfplumber
